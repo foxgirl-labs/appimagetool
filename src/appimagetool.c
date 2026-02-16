@@ -83,6 +83,7 @@ gchar *exclude_file = NULL;
 gchar *runtime_file = NULL;
 gchar *sign_key = NULL;
 gchar *pathToMksquashfs = NULL;
+gchar *file_url;
 
 // #####################################################################
 
@@ -350,28 +351,29 @@ void extract_arch_from_text(gchar *archname, const gchar* sourcename, bool* arch
         if (archname) {
             replacestr(archname, "-", "_");
             replacestr(archname, " ", "_");
-            if (g_ascii_strncasecmp("i386", archname, 20) == 0
-                    || g_ascii_strncasecmp("i486", archname, 20) == 0
-                    || g_ascii_strncasecmp("i586", archname, 20) == 0
-                    || g_ascii_strncasecmp("i686", archname, 20) == 0
-                    || g_ascii_strncasecmp("intel_80386", archname, 20) == 0
-                    || g_ascii_strncasecmp("intel_80486", archname, 20) == 0
-                    || g_ascii_strncasecmp("intel_80586", archname, 20) == 0
-                    || g_ascii_strncasecmp("intel_80686", archname, 20) == 0
+            if (g_ascii_strncasecmp("i386", archname, 5) == 0
+                    || g_ascii_strncasecmp("i486", archname, 5) == 0
+                    || g_ascii_strncasecmp("i586", archname, 5) == 0
+                    || g_ascii_strncasecmp("i686", archname, 5) == 0
+                    || g_ascii_strncasecmp("intel_80386", archname, 12) == 0
+                    || g_ascii_strncasecmp("intel_80486", archname, 12) == 0
+                    || g_ascii_strncasecmp("intel_80586", archname, 12) == 0
+                    || g_ascii_strncasecmp("intel_80686", archname, 12) == 0
                     ) {
                 archs[fARCH_i686] = 1;
                 if (verbose)
                     fprintf(stderr, "%s used for determining architecture i386\n", sourcename);
-            } else if (g_ascii_strncasecmp("x86_64", archname, 20) == 0) {
+            } else if (g_ascii_strncasecmp("x86_64", archname, 7) == 0) {
                 archs[fARCH_x86_64] = 1;
                 if (verbose)
                     fprintf(stderr, "%s used for determining architecture x86_64\n", sourcename);
-            } else if (g_ascii_strncasecmp("arm", archname, 20) == 0) {
+            } else if (g_ascii_strncasecmp("arm", archname, 4) == 0 ||
+                       g_ascii_strncasecmp("armhf", archname, 6) == 0) {
                 archs[fARCH_armhf] = 1;
                 if (verbose)
                     fprintf(stderr, "%s used for determining architecture ARM\n", sourcename);
-            } else if (g_ascii_strncasecmp("arm_aarch64", archname, 20) == 0 ||
-                       g_ascii_strncasecmp("aarch64", archname, 20) == 0) {
+            } else if (g_ascii_strncasecmp("arm_aarch64", archname, 12) == 0 ||
+                       g_ascii_strncasecmp("aarch64", archname, 8) == 0) {
                 archs[fARCH_aarch64] = 1;
                 if (verbose)
                     fprintf(stderr, "%s used for determining architecture ARM aarch64\n", sourcename);
@@ -521,6 +523,7 @@ static GOptionEntry entries[] =
     { "exclude-file", 0, 0, G_OPTION_ARG_STRING, &exclude_file, _exclude_file_desc, NULL },
     { "runtime-file", 0, 0, G_OPTION_ARG_STRING, &runtime_file, "Runtime file to use", NULL },
     { "sign-key", 0, 0, G_OPTION_ARG_STRING, &sign_key, "Key ID to use for gpg[2] signatures", NULL},
+    { "file-url", 0, 0, G_OPTION_ARG_STRING, &file_url, "URL of the AppImage file, can be relative to zsync, or absolute/full", NULL },
     { G_OPTION_REMAINING, 0, 0, G_OPTION_ARG_FILENAME_ARRAY, &remaining_args, NULL, NULL },
     { 0,0,0,0,0,0,0 }
 };
@@ -610,8 +613,11 @@ main (int argc, char *argv[])
         exit(1);
     }
 
+    if (file_url && strlen(file_url) == 0) 
+        die("--file-url argument is empty");
+
     fprintf(
-        stderr,
+        showVersionOnly ? stdout : stderr,
         "appimagetool, %s (git version %s), build %s built on %s\n",
         RELEASE_NAME, GIT_VERSION, BUILD_NUMBER, BUILD_DATE
     );
@@ -724,7 +730,7 @@ main (int argc, char *argv[])
         if(g_find_program_in_path ("desktop-file-validate")) {
             if(validate_desktop_file(desktop_file) != 0){
                 fprintf(stderr, "ERROR: Desktop file contains errors. Please fix them. Please see\n");
-                fprintf(stderr, "       https://standards.freedesktop.org/desktop-entry-spec/1.0/n");
+                fprintf(stderr, "       https://specifications.freedesktop.org/desktop-entry-spec/latest/index.html");
                 die("       for more information.");
             }
         }
@@ -952,7 +958,7 @@ main (int argc, char *argv[])
                     if(zsyncmake_path){
                         char buf[1024];
                         // gh-releases-zsync|probono|AppImages|latest|Subsurface-*x86_64.AppImage.zsync
-                        int ret = snprintf(buf, "gh-releases-zsync|%s|%s|latest|%s*-%s.AppImage.zsync", github_repository_owner, github_repository_name, app_name_for_filename, arch);
+                        int ret = snprintf(buf, sizeof(buf), "gh-releases-zsync|%s|%s|latest|%s*-%s.AppImage.zsync", github_repository_owner, github_repository_name, app_name_for_filename, arch);
                         if (ret < 0) {
                             die("snprintf error");
                         } else if (ret >= sizeof(buf)) {
@@ -1129,7 +1135,9 @@ main (int argc, char *argv[])
                 fprintf(stderr, "zsyncmake is available and updateinformation is provided, "
                                 "hence generating zsync file\n");
 
-                const gchar* const zsyncmake_command[] = {zsyncmake_path, destination, "-u", basename(destination), NULL};
+                // notice for Alpine builds: Alpine's getopt does not parse flags passed after the first parameter, order matters here
+                const gchar* zsync_url_arg = file_url ? file_url : basename(destination);
+                const gchar* const zsyncmake_command[] = {zsyncmake_path, "-u", zsync_url_arg, destination, NULL};
 
                 if (verbose) {
                     fprintf(stderr, "Running zsyncmake process: ");
